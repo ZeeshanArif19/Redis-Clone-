@@ -42,8 +42,8 @@ public class RespParser {
     private static String readBulkString(InputStream in,int length) throws IOException{ //reads eaxct length bytes of data followed by \r\n
         byte[] buffer =new byte[length];
         int totalBytesRead=0;
-        while(totalBytesRead<length){
-            int read=in.read(buffer,totalBytesRead,length-totalBytesRead);
+        while(totalBytesRead<length){ //TCP is a stream oriented protocol not packet oriented when we send 100bytes of data over the wire the client might send those in small chunks due to netwrok delayes or packet fragmentation
+            int read=in.read(buffer,totalBytesRead,length-totalBytesRead); //buffer,offset(where in the array to start filling),length
             if(read==-1) throw new IOException("Unexpected end of stream while reading bulk string");
             totalBytesRead+=read;
         }
