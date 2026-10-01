@@ -10,16 +10,19 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import com.miniredis.RedisObject.DataType;
+
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.HashSet;
 import java.util.Iterator;
 
 public class RedisServer {
     private static final int PORT=6379;
     //shared thread safe in memory key-value store accesible to all client threads
-    private static final ConcurrentHashMap<String,String> dataStore= new ConcurrentHashMap<>(); //key-val store
+    private static final ConcurrentHashMap<String,RedisObject> dataStore= new ConcurrentHashMap<>(); //key-val store
     private static final ConcurrentHashMap<String,Long> ttlstore= new ConcurrentHashMap<>(); //key->Absoulute expiration timestamp in millis
 
     public static void main(String[] args) throws IOException{
@@ -200,6 +203,83 @@ public class RedisServer {
                     }
                 }
                 break;
+            case "HSET" :
+                String key= commandTokens.get(1);
+                String field = commandTokens.get(2);
+                String value=commandTokens.get(3);
+                
+                RedisObject obj=dataStore.get(key);
+                if(obj!=null && obj.getType()!=DataType.HASH){
+                    RespWriter.writeError(out,"WRONGTYPE Operation against a key holding the wrong kind of value");
+                    break;
+                }
+
+                Map<String,String> map;
+                if(obj==null){
+                    map=new HashMap<>();
+                    dataStore.put(key,new RedisObject(DataType.HASH,map));
+                }
+                else{
+                    map=(Map<String,String>) obj.getValue();
+                }
+                
+                boolean isNewField=!map.containsKey(field);
+                map.put(field,value);
+                ttlstore.remove(key);
+                RespWriter.writeInteger(out, isNewField?1:0);
+                break;
+            
+            case "LPUSH":
+                String key=commandTokens.get(1);
+                RedisObject obj= dataStore.get(key);
+
+                if(obj!=null && obj.getType()!=DataType.LIST){
+                    RespWriter.writeError(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                    break;
+                }
+
+                Deque<String> list;
+                if(obj==null){
+                    list=new ArrayDeque<>();
+                    dataStore.put(key,new RedisObject(DataType.List,list));
+                }
+                else{
+                    list=(Deque<String>) obj.getValue();
+                }
+
+                for(int i=2;i<commandTokens.size();i++){
+                    list.addFirst(commandTokens.get(i));
+                }
+
+                RespWriter.writeInteger(out, list.size());
+                break;
+            
+            case "SADD":
+                String key=commandTokens.get(1);
+                RedisObject obj= dataStore.get(key);
+                
+                if(obj!=null && obj,getType()!=DataType.SET){
+                    RespWriter.writeInteger(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                    break;
+                }
+
+                Set<String> set;
+                if(obj==null){
+                    set=new HashSet<>();
+                    dataStore.put(key,new RedisObject(DataType.SET, set));
+                }
+                else{
+                    set=(Set<String>) obj.getValue();
+                }
+
+                int addedCount=0;
+                for(int i=2;i<commandTokens.size();i++){
+                    if(set.add(commandTokens.get(i))){
+                        addedCount++;
+                    }
+                }
+                RespWriter.writeInteger(out, addedCount);
+                break;
 
             case "EXPIRE":
                 if(commandTokens.size()<3){
@@ -242,6 +322,16 @@ public class RedisServer {
                 }
                 break;
             
+            case "TYPE":
+                String key=commandTokens.get(1);
+                RedisObject obj=dataStore.get(key);
+                if(obj==null || isExpired(key)){
+                    RespWriter.writeSimpleString(out,"none");
+                } else{
+                    RespWriter.writeSimpleString(out, obj.getType().name().toLowerCase());
+                }
+                break;
+
             case "DEL":
                 if(commandTokens.size()<2){
                     RespWriter.writeError(out,"ERR wrong number of arguments for 'SET'");
