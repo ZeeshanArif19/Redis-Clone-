@@ -1,5 +1,7 @@
 package com.miniredis;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.io.IOException;
 
 public class RespWriter {
@@ -24,6 +26,27 @@ public class RespWriter {
             out.write(("$"+bytes.length+"\r\n"+val+"\r\n").getBytes());
         }
         out.flush();
+    }
+
+    //Array support
+    //writes null array
+    public static void writeNullArray(OutputStream out) throws IOException{
+        out.write("*-1\r\n".getBytes(StandardCharsets.UTF_8));
+    }
+    //writes RESP array header
+    public static void writeArrayHeader(OutputStream out,int count) throws IOException{
+        out.write(("*"+count+"\r\n").getBytes(StandardCharsets.UTF_8));
+    }
+    //Serializes a java collection into a RESP array of Bulk Strings
+    public static void writeArray(OutputStream out, Collection<String> items) throws IOException{
+        if(items==null){
+            writeNullArray(out);
+            return;
+        }
+        writeArrayHeader(out, items.size());
+        for(String item:items){
+            writeBulkString(out, item);
+        }
     }
 }
 // 1. The Terminal Executes \r\n Instead of Displaying It

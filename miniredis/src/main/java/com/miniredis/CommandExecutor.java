@@ -3,6 +3,7 @@ package com.miniredis;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -108,6 +109,126 @@ public class CommandExecutor {
                 }
                 break;
             }
+            case "HGET":
+                if(commandTokens.size()<3){
+                    RespWriter.writeError(out,"ERR wrong number of arguments for 'HGET'");
+                    break;
+                }
+                else{
+                    String key=commandTokens.get(1);
+                    String field=commandTokens.get(2);
+
+                    RedisObject obj=dataStore.get(key);
+                    if(obj!=null && obj.getType()!=DataType.HASH){
+                        RespWriter.writeError(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                        break;
+                    }
+
+                    if(obj==null || isExpired(key)){
+                        RespWriter.writeError(out, null);
+                    }
+                    else{
+                        Map<String,String> map = (Map<String,String>) obj.getValue();
+                        String val=map.get(field);
+                        if(val!=null) EvictionManager.touchKey(key);
+                        RespWriter.writeBulkString(out, val);
+                    }
+                }
+                break;
+            
+            case "HGETALL":
+                if(commandTokens.size()<2){
+                    RespWriter.writeError(out,"ERR wrong number of arguments for 'HGETALL'" );
+                }
+                else{
+                    String key=commandTokens.get(1);
+                    RedisObject obj=dataStore.get(key);
+                    if(obj!=null && obj.getType()!=DataType.HASH){
+                        RespWriter.writeError(out,"WRONGTYPE Operation against a key holding the wrong kind of value" );
+                        break;
+                    }
+
+                    if(obj==null || isExpired(key)){
+                        RespWriter.writeError(out, null);
+                    }
+                    else{
+                        Map<String,String> map=(Map<String,String>) obj.getValue();
+                        EvictionManager.touchKey(key);
+                        
+                        RespWriter.writeArrayHeader(out, map.size()*2); // HGETALL returns field1, val1, field2, val2 as a flat RESP array
+                        for(Map.Entry<String,String> entry: map.entrySet()){
+                            RespWriter.writeBulkString(out, entry.getKey());
+                            RespWriter.writeBulkString(out, entry.getValue());
+                        }
+                    }
+                }
+                break; 
+            
+            case "HDEL":
+                if(commandTokens.size()<3){
+                    RespWriter.writeError(out, "ERR wrong number of arguments for 'HDEL'");
+                }
+                else{
+                    String key=commandTokens.get(1);
+                    RedisObject obj=dataStore.get(key);
+                    if(obj!=null || obj.getType()!=DataType.HASH){
+                        RespWriter.writeError(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                    }
+                    
+                    if(obj==null || isExpired(key)){
+                        RespWriter.writeError(out, null);
+                    }
+                    else{
+                        Map<String,String> map=(Map<String,String>) obj.getValue();
+                        int removedCount=0;
+                        for(int i=2;i<commandTokens.size();i++){
+                            if(map.remove(commandTokens.get(i))!=null) removedCount++;
+                        }
+                        //auto-delete empty hashmap
+                        if(map.isEmpty()){
+                            dataStore.remove(key);
+                            ttlstore.remove(key);
+                            EvictionManager.removeKey(key);
+                            RespWriter.writeInteger(out, removedCount);
+                        }
+                    }
+                }
+                break;
+            
+            case "RPUSH":
+                if(commandTokens.size()<3){
+                    RespWriter.writeError(out, "ERR wrong number of arguments for 'RPUSH'");
+                    break;
+                }
+                else{
+                    if(!EvictionManager.evictIfNecessary(dataStore, ttlstore)){
+                        RespWriter.writeError(out, "OOM command not allowed when used memory > 'maxmemory'");
+                        break;
+                    }
+                    String key=commandTokens.get(1);
+                    RedisObject obj=dataStore.get(key);
+                    if(obj!=null && obj.getType()!=DataType.LIST){
+                        RespWriter.writeError(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                        break;
+                    }
+                    
+                    Deque<String> list;
+                    if(obj==null){
+                        list=new ArrayDeque<>();
+                        dataStore.put(key,new RedisObject(DataType.LIST,list));
+                    }
+                    else{
+                        list=(Deque<String>) obj.getValue();
+                    }
+                    for(int i=2;i<commandTokens.size();i++){
+                        list.addLast(commandTokens.get(i));
+                    }
+                    
+                    EvictionManager.touchKey(key);
+                    RespWriter.writeInteger(out,list.size());
+                    break;
+                }
+
             case "LPUSH": {
                 if(commandTokens.size()<3){
                     RespWriter.writeError(out, "ERR wrong number of arguments for 'LPUSH'");
@@ -134,11 +255,90 @@ public class CommandExecutor {
                     for(int i=2;i<commandTokens.size();i++){
                         list.addFirst(commandTokens.get(i));
                     }
-
+                    EvictionManager.touchKey(key);
                     RespWriter.writeInteger(out, list.size());
                 }
                 break;
             }
+
+            case "LPOP":
+            case "RPOP":
+                if(commandTokens.size()<2){
+                    RespWriter.writeError(out,"ERR wrong number of arguments for '"+cmd+"'");
+                }
+                
+                String key=commandTokens.get(1);
+                RedisObject obj=dataStore.get(key);
+                if(obj!=null && obj.getValue()!=DataType.LIST){
+                    RespWriter.writeError(out,"WRONGTYPE Operation against a key holding the wrong kind of value" );
+                    break;
+                }
+                if(obj==null || isExpired(key)){
+                    RespWriter.writeBulkString(out, null);
+                    break;
+                }
+                else{
+                    Deque<String> list = (Deque<String>) obj.getValue();
+                    String popped= (cmd=="LPOP")?list.pollFirst():list.pollLast();
+                    
+                    if(popped!=null){
+                        EvictionManager.touchKey(key);
+                    }
+                    
+                    if(list.isEmpty()){
+                        dataStore.remove(key);
+                        ttlstore.remove(key);
+                        EvictionManager.removeKey(key);
+                    }
+                    RespWriter.writeBulkString(out, popped);
+                }
+                break;
+            
+            case "LRANGE":
+                if(commandTokens.size()<4){
+                    RespWriter.writeError(out,"ERR wrong number of arguments for 'LRANGE'");
+                    break;
+                }
+                String key=commandTokens.get(1);
+                RedisObject obj=dataStore.get(key);
+                if(obj!=null && obj.getType()!=DataType.LIST){
+                    RespWriter.writeError(out, "WRONGTYPE Operation against a key holding the wrong kind of value");
+                    break;
+                }
+                
+                if(obj==null || isExpired(key)){
+                    RespWriter.writeBulkString(out, null);
+                    break;
+                }
+                else{
+                    try{
+                        int start=Integer.parseInt(commandTokens.get(2));
+                        int stop=Integer.parseInt(commandTokens.get(3));
+                        
+                        List<String> list= new ArrayList((Deque<String>) obj.getValue());
+                        int size=list.size();
+
+                        //normalize negative indices for redis (-1=last element)
+                        if(start<0) start=size+start;
+                        if(stop<0) stop=size+stop;
+
+                        start=Math.max(0,start);
+                        stop=Math.min(size-1,stop);
+
+                        if(start>stop || start>=size){
+                            RespWriter.writeArrayHeader(out, 0);
+                        }
+                        else{
+                            List<String> sublist= list.subList(start, stop+1);
+                            EvictionManager.touchKey(key);
+                            RespWriter.writeArray(out, sublist);
+                        }
+                    } catch(NumberFormatException e){
+                        RespWriter.writeError(out, "ERR value is not an integer or out of range");
+                    }
+                }
+                break;
+
             case "SADD": {
                 if(commandTokens.size()<3){
                     RespWriter.writeError(out, "ERR wrong number of arguments for 'SADD'");
@@ -168,7 +368,90 @@ public class CommandExecutor {
                             addedCount++;
                         }
                     }
+                    EvictionManager.touchKey(key);
                     RespWriter.writeInteger(out, addedCount);
+                }
+                break;
+            }
+
+            case "SMEMBERS": {
+                if(commandTokens.size()<2){
+                    RespWriter.writeError(out, "ERR wrong number of arguments for 'SMEMBERS'");
+                    break;
+                } 
+                String key=commandTokens.get(1);
+                RedisObject obj=dataStore.get(key);
+                if(obj!=null && obj.getValue()!=DataType.SET){
+                    RespWriter.writeError(out,"WRONGTYPE Operation against a key holding the wrong kind of value" );
+                    break;
+                }
+                
+                if(obj==null || isExpired(key)){
+                    RespWriter.writeBulkString(out, null);
+                }
+                else{
+                    Set<String> set=(Set<String>) obj.getValue();
+                    EvictionManager.touchKey(key);
+                    RespWriter.writeArray(out, set);
+                }
+                break;
+            }
+
+            case "SISMEMBER":{
+                if(commandTokens.size()<3){
+                    RespWriter.writeError(out, "ERR wrong number of arguments for 'SISMEMBER'");
+                    break;
+                }
+                String key=commandTokens.get(1);
+                String member=commandTokens.get(2);
+                RedisObject obj=dataStore.get(key);
+                if(obj!=null && obj.getValue()!=DataType.SET){
+                    RespWriter.writeError(out,"WRONGTYPE Operation against a key holding the wrong kind of value" );
+                    break;
+                }
+                
+                if(obj==null || isExpired(key)){
+                    RespWriter.writeBulkString(out, null);
+                }
+                else{
+                    Set<String> set=(Set<String>) obj.getValue();
+                    EvictionManager.touchKey(key);
+                    RespWriter.writeInteger(out, (set.contains(member))?1:0);
+                }
+                break;
+            }
+            case "SREM":{
+                 if(commandTokens.size()<3){
+                    RespWriter.writeError(out, "ERR wrong number of arguments for 'SREM'");
+                    break;
+                }
+                String key=commandTokens.get(1);
+                RedisObject obj=dataStore.get(key);
+                if(obj!=null && obj.getValue()!=DataType.SET){
+                    RespWriter.writeError(out,"WRONGTYPE Operation against a key holding the wrong kind of value" );
+                    break;
+                }
+                
+                if(obj==null || isExpired(key)){
+                    RespWriter.writeBulkString(out, null);
+                }
+                else{
+                    Set<String> set=(Set<String>) obj.getValue();
+                    EvictionManager.touchKey(key);
+                    
+                    int removedCount=0;
+                    for(int i=2;i<commandTokens.size();i++){
+                        if(set.remove(commandTokens.get(i))){
+                            removedCount++;
+                        }
+                    }
+
+                    if(set.isEmpty()){
+                        dataStore.remove(key);
+                        ttlstore.remove(key);
+                        EvictionManager.removeKey(key);
+                    }
+                    RespWriter.writeInteger(out, removedCount);
                 }
                 break;
             }
