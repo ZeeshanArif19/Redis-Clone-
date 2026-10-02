@@ -24,6 +24,7 @@ public class CommandExecutor {
     }
 
     public byte[] execute(List<String> commandTokens) throws IOException {
+
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         String cmd = commandTokens.get(0).toUpperCase();
 
@@ -540,9 +541,31 @@ public class CommandExecutor {
                 RespWriter.writeError(out, "ERR unknown command '" + cmd + "'");
                 break;
         }
+        //intercept and record write operations
+        if(isMutatingCommand(cmd)){
+            AofManager.logCommand(commandTokens);
+        }
         return out.toByteArray();
     }
 
+    private  boolean isMutatingCommand(String cmd){
+        switch(cmd){
+            case "SET":
+            case "DEL":
+            case "EXPIRE":
+            case "HSET":
+            case "HDEL":
+            case "LPUSH":
+            case "RPUSH":
+            case "LPOP":
+            case "RPOP":
+            case "SADD":
+            case "SREM":
+                return true;
+            default:
+                return false;
+        }
+    }
     private boolean isExpired(String key) { // passive cleaner
         Long expireAt = ttlstore.get(key);
         if (expireAt != null && System.currentTimeMillis() >= expireAt) { // if key exists but has no TTL .get returns

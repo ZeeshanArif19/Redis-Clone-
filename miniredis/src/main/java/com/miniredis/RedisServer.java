@@ -24,6 +24,10 @@ public class RedisServer {
     private static final CommandExecutor commandExecutor= new CommandExecutor(dataStore, ttlstore);
 
     public static void main(String[] args) throws IOException{
+        CommandExecutor executor = new CommandExecutor(dataStore, ttlstore);
+        AofManager.loadAndReplay(executor); //dependency injection -> loadandreplay recieves commandExecutor instance and uses it to reconstruct state
+        AofManager.init(); //open aof file for live command appending
+
         startActiveCleaner();
         //Step1 setting up the non blocking server
         Selector selector=Selector.open();
